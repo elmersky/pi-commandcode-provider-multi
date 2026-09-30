@@ -1,7 +1,7 @@
 # pi-commandcode-provider
 
-[![CI](https://github.com/patlux/pi-commandcode-provider/actions/workflows/ci.yml/badge.svg)](https://github.com/patlux/pi-commandcode-provider/actions/workflows/ci.yml)
-[![Memory benchmark](https://github.com/patlux/pi-commandcode-provider/actions/workflows/memory-benchmark.yml/badge.svg)](https://github.com/patlux/pi-commandcode-provider/actions/workflows/memory-benchmark.yml)
+[![CI](https://github.com/elmersky/pi-commandcode-provider-multi/actions/workflows/ci.yml/badge.svg)](https://github.com/elmersky/pi-commandcode-provider-multi/actions/workflows/ci.yml)
+[![Memory benchmark](https://github.com/elmersky/pi-commandcode-provider-multi/actions/workflows/memory-benchmark.yml/badge.svg)](https://github.com/elmersky/pi-commandcode-provider-multi/actions/workflows/memory-benchmark.yml)
 
 A custom provider for [pi](https://github.com/earendil-works/pi) that connects to the [Command Code](https://commandcode.ai) Provider API.
 
@@ -79,6 +79,29 @@ Supported examples:
   "commandcode": "user_..."
 }
 ```
+
+### Multiple accounts
+
+Go-plan requests can use multiple Command Code API keys. Configure them as a comma- or newline-separated list:
+
+```sh
+export COMMAND_CODE_API_KEYS="user_first,user_second,user_third"
+```
+
+The legacy `COMMANDCODE_API_KEYS` alias and numbered variables such as `COMMAND_CODE_API_KEY_1` are also supported. The `COMMAND_CODE_API_KEYS_FILE` variable can point to a file containing one key per line. A custom JSON file can be selected with `COMMAND_CODE_ACCOUNTS_FILE`:
+
+```json
+{
+  "accounts": [
+    { "label": "primary", "apiKeyEnv": "COMMAND_CODE_ACCOUNT_1" },
+    { "label": "backup", "apiKeyEnv": "COMMAND_CODE_ACCOUNT_2" }
+  ]
+}
+```
+
+Set `COMMAND_CODE_ACCOUNT_1` and `COMMAND_CODE_ACCOUNT_2` to the actual keys. Literal `apiKey` values are supported for local-only configuration, but environment references avoid storing credentials in the JSON file.
+
+The existing single-key variables, OAuth credentials, and `auth.json` formats remain supported. A failed `401` disables that key for the process; a `429`, or a quota-exhausted `403`, puts it into a temporary cooldown and retries with another configured key. The default `failover` mode keeps using the current healthy account. Set `COMMAND_CODE_ACCOUNT_ROTATION=round-robin` to distribute new requests across healthy keys.
 
 ## Usage
 

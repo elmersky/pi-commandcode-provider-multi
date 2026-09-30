@@ -7,11 +7,12 @@
 
 import { randomUUID } from "node:crypto"
 
+import { CommandCodeAccountPool, parseAccountRotationMode } from "./accounts.ts"
+import { getConfiguredApiKeys } from "./api-key.ts"
 import { COMMAND_CODE_CLI_VERSION } from "./commandcode-catalog.ts"
 import { commandCodeErrorMessage, redactCommandCodeErrorText } from "./overflow.ts"
 import { modelSupportsImageInput } from "./models.ts"
 import {
-  getApiKey,
   getEnvironmentInfo,
   isRecord,
   assertTextOnlyMessages,
@@ -63,6 +64,22 @@ function parseRetryAfterSeconds(value: string | null): number | undefined {
   const date = Date.parse(value)
   if (!Number.isNaN(date)) return Math.max(0, (date - Date.now()) / 1000)
   return undefined
+}
+
+function isQuotaExhaustionText(value: string): boolean {
+  const text = value.toLowerCase()
+  return /(?:quota|credit|usage|rate.?limit).*(?:exhaust|exceed|deplet|limit|spent)|(?:exhaust|exceed|deplet).*(?:quota|credit|usage)/.test(
+    text,
+  )
+}
+
+async function isQuotaExhaustionResponse(response: Response): Promise<boolean> {
+  if (response.status !== 403) return false
+  const body = await response
+    .clone()
+    .text()
+    .catch(() => "")
+  return isQuotaExhaustionText(body)
 }
 
 function effectiveMaxRetryDelayMs(value: number | undefined): number {
@@ -229,6 +246,14 @@ export function createStreamCommandCode(deps: CoreDependencies) {
     })
   }
 
+  const accountPool = new CommandCodeAccountPool({
+    mode: parseAccountRotationMode(
+      (deps.env ?? process.env).COMMAND_CODE_ACCOUNT_ROTATION ??
+        (deps.env ?? process.env).COMMANDCODE_ACCOUNT_ROTATION,
+    ),
+    now,
+  })
+
   return function streamCommandCode(
     model: ModelLike,
     context: ContextLike,
@@ -237,15 +262,21 @@ export function createStreamCommandCode(deps: CoreDependencies) {
     const stream = deps.createStream()
 
     async function run() {
-      // Some hosts pass a literal env-var reference instead of resolving it.
-      const apiKey = pickCommandCodeApiKey(
-        options?.apiKey,
-        getApiKey({
+      const configuredKeys =
+        deps.getApiKeys?.() ??
+        getConfiguredApiKeys({
           env: deps.env,
           authPaths: deps.authPaths,
           homeDir: deps.homeDir,
-        }),
-      )
+        })
+      const accountKeys = [
+        ...new Set(
+          [pickCommandCodeApiKey(options?.apiKey, undefined), ...configuredKeys].filter(
+            (key): key is string => Boolean(key),
+          ),
+        ),
+      ]
+      let apiKey = accountPool.resolve(accountKeys)
 
       if (!apiKey) {
         const msg: AssistantMessageLike = {
@@ -257,7 +288,7 @@ export function createStreamCommandCode(deps: CoreDependencies) {
           usage: defaultUsage(),
           stopReason: "error",
           errorMessage:
-            "No Command Code API key. Run /login and select Command Code, set COMMAND_CODE_API_KEY (or legacy COMMANDCODE_API_KEY), or configure ~/.commandcode/auth.json, ~/.pi/agent/auth.json or ~/.omp/agent/auth.json",
+            "No Command Code API key. Run /login and select Command Code, set COMMAND_CODE_API_KEY (or legacy COMMANDCODE_API_KEY) or COMMAND_CODE_API_KEYS, or configure ~/.commandcode/auth.json, ~/.pi/agent/auth.json, ~/.omp/agent/auth.json, or COMMAND_CODE_ACCOUNTS_FILE.",
           timestamp: now(),
         }
         stream.push({ type: "error", reason: "error", error: msg })
@@ -588,18 +619,8 @@ export function createStreamCommandCode(deps: CoreDependencies) {
 
         const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES
         const maxRetryDelayMs = effectiveMaxRetryDelayMs(options?.maxRetryDelayMs)
-        const requestHeaders = {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-          "x-command-code-version": COMMAND_CODE_CLI_VERSION,
-          "x-cli-environment": "production",
-          "x-project-slug": projectSlugFromPath(workingDir),
-          "x-taste-learning": "true",
-          ...(options?.sessionId ? { "x-session-id": options.sessionId } : {}),
-          "User-Agent": "cli",
-          ...options?.headers,
-        }
         const bodyStr = JSON.stringify(body)
+        const triedAccountKeys = new Set<string>()
 
         let response!: Response
         retryLoop: for (let attempt = 0; ; attempt++) {
@@ -629,6 +650,18 @@ export function createStreamCommandCode(deps: CoreDependencies) {
             })
 
           try {
+            const requestHeaders = {
+              "Content-Type": "application/json",
+              "x-command-code-version": COMMAND_CODE_CLI_VERSION,
+              "x-cli-environment": "production",
+              "x-project-slug": projectSlugFromPath(workingDir),
+              "x-taste-learning": "true",
+              ...(options?.sessionId ? { "x-session-id": options.sessionId } : {}),
+              "User-Agent": "cli",
+              ...options?.headers,
+              Authorization: `Bearer ${apiKey}`,
+            }
+
             try {
               response = await fetchImpl(`${apiBase}/alpha/generate`, {
                 method: "POST",
@@ -643,6 +676,31 @@ export function createStreamCommandCode(deps: CoreDependencies) {
                 throw timeoutError(timeoutMs)
               }
               throw fetchError
+            }
+
+            // Rotate before the normal retry policy so another account can serve
+            // the request even when maxRetries is zero.
+            const shouldRotateAccount =
+              !response.ok &&
+              accountKeys.length > 1 &&
+              (response.status === 401 ||
+                response.status === 429 ||
+                (response.status === 403 && (await isQuotaExhaustionResponse(response))))
+            if (shouldRotateAccount) {
+              const retryAfter = response.headers.get("retry-after")
+              const retryAfterSeconds = parseRetryAfterSeconds(retryAfter)
+              accountPool.reject(
+                apiKey,
+                response.status === 401 ? "invalid-credential" : "rate-limit",
+                retryAfterSeconds === undefined ? undefined : now() + retryAfterSeconds * 1000,
+              )
+              triedAccountKeys.add(apiKey)
+              const nextApiKey = accountPool.resolve(accountKeys, triedAccountKeys)
+              if (nextApiKey) {
+                await response.text().catch(() => "")
+                apiKey = nextApiKey
+                continue retryLoop
+              }
             }
 
             // --- HTTP-level retry ---

@@ -203,6 +203,8 @@ export interface CoreDependencies {
   fetchImpl?: typeof fetch
   authPaths?: readonly string[]
   env?: NodeJS.ProcessEnv
+  /** Resolves all configured account keys for request-level rotation. */
+  getApiKeys?: () => readonly string[]
   cwd?: () => string
   now?: () => number
   uuid?: () => string

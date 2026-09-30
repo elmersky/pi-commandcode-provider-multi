@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, it } from "node:test"
 
-import { getConfiguredApiKey } from "../src/api-key.ts"
+import { getConfiguredApiKey, getConfiguredApiKeys } from "../src/api-key.ts"
 
 async function withAuthFile(
   value: unknown,
@@ -51,6 +51,38 @@ describe("getConfiguredApiKey()", () => {
         assert.equal(getConfiguredApiKey({ env: {}, authPaths: [authPath] }), testCase.expected)
       })
     }
+  })
+
+  it("reads multiple keys from env and account arrays", async () => {
+    assert.deepEqual(
+      getConfiguredApiKeys({
+        env: {
+          COMMAND_CODE_API_KEYS: "env-key-1, env-key-2",
+          COMMAND_CODE_API_KEY_3: "env-key-3",
+        },
+        authPaths: [],
+      }),
+      ["env-key-1", "env-key-2", "env-key-3"],
+    )
+
+    await withAuthFile(
+      {
+        accounts: [
+          { apiKey: "account-key-1" },
+          { key: "account-key-2" },
+          { apiKeyEnv: "COMMAND_CODE_ACCOUNT_3" },
+        ],
+      },
+      async (authPath) => {
+        assert.deepEqual(
+          getConfiguredApiKeys({
+            env: { COMMAND_CODE_ACCOUNT_3: "account-key-3" },
+            authPaths: [authPath],
+          }),
+          ["account-key-1", "account-key-2", "account-key-3"],
+        )
+      },
+    )
   })
 
   it("ignores malformed files", async () => {

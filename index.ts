@@ -16,7 +16,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { join } from "node:path"
 
-import { getConfiguredApiKey } from "./src/api-key.ts"
+import { getConfiguredApiKey, getConfiguredApiKeys } from "./src/api-key.ts"
 import { pickCommandCodeApiKey, withResolvedCommandCodeApiKey } from "./src/converters.ts"
 import { createStreamCommandCode } from "./src/core.ts"
 import { calculateCommandCodeCost, commandCodeCostRatesAt } from "./src/cost.ts"
@@ -187,6 +187,7 @@ export default async function (pi: ExtensionAPI) {
     createStream: () => new AssistantMessageEventStream(),
     calculateCost: calculateCommandCodeCost,
     apiBase: legacyApiBase(apiBase),
+    getApiKeys: () => getConfiguredApiKeys(),
   })
   const resolveStreamOptions = (options?: Parameters<typeof streamNativeProvider>[2]) =>
     withResolvedCommandCodeApiKey(options, getConfiguredApiKey())

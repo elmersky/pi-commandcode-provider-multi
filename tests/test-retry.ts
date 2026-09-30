@@ -64,6 +64,89 @@ describe("streamCommandCode — retry on transient errors", () => {
     assert.equal(done.reason, "stop")
   })
 
+  it("switches to the next configured account after a 429", async () => {
+    server.mockResponseQueue([
+      { type: "error", status: 429, body: "rate limited" },
+      {
+        type: "success",
+        events: [JSON.stringify({ type: "finish", finishReason: "stop" })],
+      },
+    ])
+    const authorization: string[] = []
+    const { streamCommandCode } = createTestDeps({
+      apiBase: server.baseUrl(),
+      getApiKeys: () => ["option-key", "second-key"],
+      fetchImpl: async (input, init) => {
+        authorization.push(new Headers(init?.headers).get("authorization") ?? "")
+        return fetch(input, init)
+      },
+    })
+
+    const events = await collectEvents(
+      streamCommandCode(makeModel(), makeContext(), {
+        apiKey: TEST_API_KEY,
+        maxRetries: 0,
+        headers: { Authorization: "Bearer stale-key" },
+      }),
+    )
+
+    assert.equal(server.requestCount(), 2)
+    assert.deepEqual(authorization, ["Bearer option-key", "Bearer second-key"])
+    assert.equal(events.at(-1)?.type, "done")
+  })
+
+  it("switches after an invalid credential response", async () => {
+    server.mockResponseQueue([
+      { type: "error", status: 401, body: "invalid key" },
+      {
+        type: "success",
+        events: [JSON.stringify({ type: "finish", finishReason: "stop" })],
+      },
+    ])
+    const authorization: string[] = []
+    const { streamCommandCode } = createTestDeps({
+      apiBase: server.baseUrl(),
+      getApiKeys: () => ["option-key", "second-key"],
+      fetchImpl: async (input, init) => {
+        authorization.push(new Headers(init?.headers).get("authorization") ?? "")
+        return fetch(input, init)
+      },
+    })
+
+    const events = await collectEvents(
+      streamCommandCode(makeModel(), makeContext(), { apiKey: TEST_API_KEY }),
+    )
+
+    assert.deepEqual(authorization, ["Bearer option-key", "Bearer second-key"])
+    assert.equal(events.at(-1)?.type, "done")
+  })
+
+  it("switches after a quota-exhausted 403", async () => {
+    server.mockResponseQueue([
+      { type: "error", status: 403, body: "usage quota exceeded" },
+      {
+        type: "success",
+        events: [JSON.stringify({ type: "finish", finishReason: "stop" })],
+      },
+    ])
+    const authorization: string[] = []
+    const { streamCommandCode } = createTestDeps({
+      apiBase: server.baseUrl(),
+      getApiKeys: () => ["option-key", "second-key"],
+      fetchImpl: async (input, init) => {
+        authorization.push(new Headers(init?.headers).get("authorization") ?? "")
+        return fetch(input, init)
+      },
+    })
+
+    const events = await collectEvents(
+      streamCommandCode(makeModel(), makeContext(), { apiKey: TEST_API_KEY }),
+    )
+
+    assert.deepEqual(authorization, ["Bearer option-key", "Bearer second-key"])
+    assert.equal(events.at(-1)?.type, "done")
+  })
+
   it("retries on 500 and succeeds on the second attempt", async () => {
     server.mockResponseQueue([
       { type: "error", status: 500, body: "internal server error" },
